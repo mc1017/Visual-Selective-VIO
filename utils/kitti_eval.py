@@ -9,7 +9,10 @@ import torchvision.transforms.functional as TF
 import matplotlib.pyplot as plt
 import math
 from utils.utils import *
-from tqdm import tqdm 
+from tqdm import tqdm
+import random
+
+IMU_FREQ = 10
 
 class data_partition():
     def __init__(self, opt, folder):
@@ -18,6 +21,7 @@ class data_partition():
         self.data_dir = opt.data_dir
         self.seq_len = opt.seq_len
         self.folder = folder
+        self.dropout = opt.eval_data_dropout
         self.load_data()
 
     def load_data(self):
@@ -29,7 +33,19 @@ class data_partition():
         self.imus = sio.loadmat('{}{}.mat'.format(imu_dir, self.folder))['imu_data_interp']
         self.poses, self.poses_rel = read_pose_from_text('{}{}.txt'.format(pose_dir, self.folder))
         self.img_paths.sort()
-
+        
+        # Create Irregularity in the data by dropping some data points
+        i = 1 
+        while i < len(self.poses_rel) - 2:
+            if random.random() < self.dropout:
+                self.poses_rel[i] = concatenate_pose_changes(self.poses_rel[i], self.poses_rel[i + 1])
+                self.poses_rel = np.delete(self.poses_rel, i + 1, axis=0)
+                self.poses = np.delete(self.poses, i, axis=0)
+                self.imus = np.delete(self.imus, np.concatenate([np.arange(i * IMU_FREQ, (i + 1) * IMU_FREQ)]), axis=0)
+                self.img_paths.pop(i)
+            else:
+                i += 1
+                     
         self.img_paths_list, self.poses_list, self.imus_list = [], [], []
         start = 0
         n_frames = len(self.img_paths)
@@ -263,6 +279,8 @@ def plotPath_2D(seq, poses_gt_mat, poses_est_mat, plot_path_dir, decision, speed
     png_title = "{}_speed".format(seq)
     plt.savefig(plot_path_dir + "/" + png_title + ".png", bbox_inches='tight', pad_inches=0.1)
     plt.close()
+    
+
 
 
 

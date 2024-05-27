@@ -6,13 +6,14 @@ from PIL import Image
 import torch
 from torch.utils.data import Dataset
 import scipy.io as sio
-from path import Path
+from pathlib import Path
 from utils.utils import rotationError, read_pose_from_text
 from utils import custom_transform
 from collections import Counter
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal.windows import triang
 from scipy.ndimage import convolve1d
+import random
 
 IMU_FREQ = 10
 
@@ -20,12 +21,14 @@ class KITTI(Dataset):
     def __init__(self, root,
                  sequence_length=11,
                  train_seqs=['00', '01', '02', '04', '06', '08', '09'],
-                 transform=None):
+                 transform=None, 
+                 dropout=0.0):
         
         self.root = Path(root)
         self.sequence_length = sequence_length
         self.transform = transform
         self.train_seqs = train_seqs
+        self.dropout = dropout
         self.make_dataset()
     
     def make_dataset(self):
@@ -33,7 +36,20 @@ class KITTI(Dataset):
         for folder in self.train_seqs:
             poses, poses_rel = read_pose_from_text(self.root/'poses/{}.txt'.format(folder))
             imus = sio.loadmat(self.root/'imus/{}.mat'.format(folder))['imu_data_interp']
-            fpaths = sorted((self.root/'sequences/{}/image_2'.format(folder)).files("*.png"))      
+            fpaths = sorted((self.root/'sequences/{}/image_2'.format(folder)).glob("*.png")) 
+            
+            # Create Irregularity in the data by dropping some data points
+            i = 1 
+            while i < len(poses_rel) - 2:
+                if random.random() < self.dropout:
+                    poses_rel[i] = concatenate_pose_changes(poses_rel[i], poses_rel[i + 1])
+                    poses_rel = np.delete(poses_rel, i + 1, axis=0)
+                    poses = np.delete(poses, i, axis=0)
+                    imus = np.delete(imus, np.concatenate([np.arange(i * IMU_FREQ, (i + 1) * IMU_FREQ)]), axis=0)
+                    fpaths.pop(i)
+                else:
+                    i += 1
+                         
             for i in range(len(fpaths)-self.sequence_length):
                 img_samples = fpaths[i:i+self.sequence_length]
                 imu_samples = imus[i*IMU_FREQ:(i+self.sequence_length-1)*IMU_FREQ+1]

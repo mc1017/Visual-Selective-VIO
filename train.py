@@ -2,7 +2,7 @@ import argparse
 import os
 import torch
 import logging
-from path import Path
+from pathlib import Path
 from utils import custom_transform
 from dataset.KITTI_dataset import KITTI
 from model import DeepVIO
@@ -10,15 +10,17 @@ from collections import defaultdict
 from utils.kitti_eval import KITTI_tester
 import numpy as np
 import math
+import wandb
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--data_dir', type=str, default='/nfs/turbo/coe-hunseok/mingyuy/KITTI_odometry', help='path to the dataset')
+parser.add_argument('--data_dir', type=str, default='/vol/bitbucket/mc620/KITTI/data', help='path to the dataset')
 parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
 parser.add_argument('--save_dir', type=str, default='./results', help='path to save the result')
 
 parser.add_argument('--train_seq', type=list, default=['00', '01', '02', '04', '06', '08', '09'], help='sequences for training')
 parser.add_argument('--val_seq', type=list, default=['05', '07', '10'], help='sequences for validation')
 parser.add_argument('--seed', type=int, default=0, help='random seed')
+parser.add_argument( "--resume", type=str, default=None, help="resume training (wandb run id)")
 
 parser.add_argument('--img_w', type=int, default=512, help='image width')
 parser.add_argument('--img_h', type=int, default=256, help='image height')
@@ -32,9 +34,9 @@ parser.add_argument('--rnn_dropout_out', type=float, default=0.2, help='dropout 
 parser.add_argument('--rnn_dropout_between', type=float, default=0.2, help='dropout within LSTM')
 
 parser.add_argument('--weight_decay', type=float, default=5e-6, help='weight decay for the optimizer')
-parser.add_argument('--batch_size', type=int, default=16, help='batch size')
+parser.add_argument('--batch_size', type=int, default=12, help='batch size')
 parser.add_argument('--seq_len', type=int, default=11, help='sequence length for LSTM')
-parser.add_argument('--workers', type=int, default=4, help='number of workers')
+parser.add_argument('--workers', type=int, default=6, help='number of workers')
 parser.add_argument('--epochs_warmup', type=int, default=40, help='number of epochs for warmup')
 parser.add_argument('--epochs_joint', type=int, default=40, help='number of epochs for joint training')
 parser.add_argument('--epochs_fine', type=int, default=20, help='number of epochs for finetuning')
@@ -46,7 +48,10 @@ parser.add_argument('--temp_init', type=float, default=5, help='initial temperat
 parser.add_argument('--Lambda', type=float, default=3e-5, help='penalty factor for the visual encoder usage')
 
 parser.add_argument('--experiment_name', type=str, default='experiment', help='experiment name')
+parser.add_argument( "--wandb", default=True, action="store_true", help="whether to use wandb logging")
 parser.add_argument('--optimizer', type=str, default='Adam', help='type of optimizer [Adam, SGD]')
+parser.add_argument("--data_dropout", type=float, default=0.0, help="irregularity in the dataset by dropping out randomly")
+parser.add_argument("--eval_data_dropout", type=float, default=0.0, help="irregularity in the eval dataset")
 
 parser.add_argument('--pretrain_flownet',type=str, default='./pretrain_models/flownets_bn_EPE2.459.pth.tar', help='wehther to use the pre-trained flownet')
 parser.add_argument('--pretrain', type=str, default=None, help='path to the pretrained model')
@@ -128,13 +133,14 @@ def main():
 
     # Create Dir
     experiment_dir = Path('./results')
-    experiment_dir.mkdir_p()
+    experiment_dir.mkdir(exist_ok=True)
     file_dir = experiment_dir.joinpath('{}/'.format(args.experiment_name))
-    file_dir.mkdir_p()
-    checkpoints_dir = file_dir.joinpath('checkpoints/')
-    checkpoints_dir.mkdir_p()
+    file_dir.mkdir(exist_ok=True)
+    checkpoints_dir = Path("/vol/bitbucket/mc620/Visual-Selective-VIO")
+    checkpoints_dir = checkpoints_dir.joinpath(args.experiment_name, "checkpoints")
+    checkpoints_dir.mkdir(exist_ok=True, parents=True)
     log_dir = file_dir.joinpath('logs/')
-    log_dir.mkdir_p()
+    log_dir.mkdir(exist_ok=True)
     
     # Create logs
     logger = logging.getLogger(args.experiment_name)
@@ -238,33 +244,48 @@ def main():
         print(message)
         logger.info(message)
         
-        if ep > args.epochs_warmup+args.epochs_joint:
-            # Evaluate the model
-            print('Evaluating the model')
-            logger.info('Evaluating the model')
-            with torch.no_grad(): 
-                model.eval()
-                errors = tester.eval(model, selection='gumbel-softmax', num_gpu=len(gpu_ids))
-        
-            t_rel = np.mean([errors[i]['t_rel'] for i in range(len(errors))])
-            r_rel = np.mean([errors[i]['r_rel'] for i in range(len(errors))])
-            t_rmse = np.mean([errors[i]['t_rmse'] for i in range(len(errors))])
-            r_rmse = np.mean([errors[i]['r_rmse'] for i in range(len(errors))])
-            usage = np.mean([errors[i]['usage'] for i in range(len(errors))])
+        if args.wandb:
+            wandb.log({"avg_pose_loss": avg_pose_loss}, step=ep)
+            
+        # Evaluate the model
+        print('Evaluating the model')
+        logger.info('Evaluating the model')
+        with torch.no_grad(): 
+            model.eval()
+            errors = tester.eval(model, selection='gumbel-softmax', num_gpu=len(gpu_ids))
+    
+        t_rel = np.mean([errors[i]['t_rel'] for i in range(len(errors))])
+        r_rel = np.mean([errors[i]['r_rel'] for i in range(len(errors))])
+        t_rmse = np.mean([errors[i]['t_rmse'] for i in range(len(errors))])
+        r_rmse = np.mean([errors[i]['r_rmse'] for i in range(len(errors))])
+        usage = np.mean([errors[i]['usage'] for i in range(len(errors))])
 
-            if t_rel < best:
-                best = t_rel 
-                torch.save(model.module.state_dict(), f'{checkpoints_dir}/best_{best:.2f}.pth')
-        
-            message = f'Epoch {ep} evaluation finished , t_rel: {t_rel:.4f}, r_rel: {r_rel:.4f}, t_rmse: {t_rmse:.4f}, r_rmse: {r_rmse:.4f}, usage: {usage:.4f}, best t_rel: {best:.4f}'
-            logger.info(message)
-            print(message)
+        if t_rel < best:
+            best = t_rel 
+            torch.save(model.module.state_dict(), f'{checkpoints_dir}/best_{best:.2f}.pth')
+    
+        message = f'Epoch {ep} evaluation finished , t_rel: {t_rel:.4f}, r_rel: {r_rel:.4f}, t_rmse: {t_rmse:.4f}, r_rmse: {r_rmse:.4f}, usage: {usage:.4f}, best t_rel: {best:.4f}'
+        logger.info(message)
+        print(message)
+        if args.wandb:
+            wandb.log({"t_rel": t_rel, "r_rel": r_rel, "t_rmse": t_rmse, "r_rmse": r_rmse, "best_t_rel": best}, step=ep)
     
     message = f'Training finished, best t_rel: {best:.4f}'
     logger.info(message)
     print(message)
 
 if __name__ == "__main__":
+    if args.wandb:
+        id, resume = (args.resume, "must") if args.resume else (wandb.util.generate_id(), "allow")
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project="Final Year Project",
+            id=id, 
+            resume=resume,
+            name=args.experiment_name,
+            # track hyperparameters and run metadata
+            config=args,
+        )
     main()
 
 

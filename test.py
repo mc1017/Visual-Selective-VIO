@@ -2,7 +2,7 @@ import argparse
 import os
 import torch
 import logging
-from path import Path
+from pathlib import Path
 from utils import custom_transform
 from dataset.KITTI_dataset import KITTI
 from model import DeepVIO
@@ -12,10 +12,11 @@ import numpy as np
 import math
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--data_dir', type=str, default='/nfs/turbo/coe-hunseok/mingyuy/KITTI_odometry', help='path to the dataset')
+parser.add_argument('--data_dir', type=str, default='/vol/bitbucket/mc620/Visual-Selective-VIO/VSVIO-Original/checkpoints/078.pth', help='path to the dataset')
 parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
 parser.add_argument('--save_dir', type=str, default='./results', help='path to save the result')
 parser.add_argument('--seq_len', type=int, default=11, help='sequence length for LSTM')
+parser.add_argument( "--test_name", type=str, default="0%_dropout", help="experiment name")
 
 parser.add_argument('--train_seq', type=list, default=['00', '01', '02', '04', '06', '08', '09'], help='sequences for training')
 parser.add_argument('--val_seq', type=list, default=['05', '07', '10'], help='sequences for validation')
@@ -34,6 +35,7 @@ parser.add_argument('--rnn_dropout_between', type=float, default=0.2, help='drop
 
 parser.add_argument('--workers', type=int, default=4, help='number of workers')
 parser.add_argument('--experiment_name', type=str, default='test', help='experiment name')
+parser.add_argument("--eval_data_dropout", type=float, default=0.0, help="irregularity in the eval dataset")
 parser.add_argument('--model', type=str, default='./pretrain_models/vf_512_if_256_3e-05.model', help='path to the pretrained model')
 
 args = parser.parse_args()
@@ -46,11 +48,11 @@ def main():
 
     # Create Dir
     experiment_dir = Path('./results')
-    experiment_dir.mkdir_p()
+    experiment_dir.mkdir(exist_ok=True)
     file_dir = experiment_dir.joinpath('{}/'.format(args.experiment_name))
-    file_dir.mkdir_p()
-    result_dir = file_dir.joinpath('files/')
-    result_dir.mkdir_p()
+    file_dir.mkdir(exist_ok=True)
+    test_dir = file_dir.joinpath("test", args.test_name)
+    test_dir.mkdir(exist_ok=True, parents=True)
     
     # GPU selections
     str_ids = args.gpu_ids.split(',')
