@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import Dataset
 import scipy.io as sio
 from pathlib import Path
-from utils.utils import rotationError, read_pose_from_text
+from utils.utils import rotationError, read_pose_from_text, read_time_from_text
 from utils import custom_transform
 from collections import Counter
 from scipy.ndimage import gaussian_filter1d
@@ -36,6 +36,8 @@ class KITTI(Dataset):
         for folder in self.train_seqs:
             poses, poses_rel = read_pose_from_text(self.root/'poses/{}.txt'.format(folder))
             imus = sio.loadmat(self.root/'imus/{}.mat'.format(folder))['imu_data_interp']
+            # Extract times information from text file
+            timestamps = read_time_from_text(self.root / "sequences/{}/times.txt".format(folder))
             fpaths = sorted((self.root/'sequences/{}/image_2'.format(folder)).glob("*.png")) 
             
             # Create Irregularity in the data by dropping some data points
@@ -45,6 +47,7 @@ class KITTI(Dataset):
                     poses_rel[i] = concatenate_pose_changes(poses_rel[i], poses_rel[i + 1])
                     poses_rel = np.delete(poses_rel, i + 1, axis=0)
                     poses = np.delete(poses, i, axis=0)
+                    timestamps = np.delete(timestamps, i, axis=0)
                     imus = np.delete(imus, np.concatenate([np.arange(i * IMU_FREQ, (i + 1) * IMU_FREQ)]), axis=0)
                     fpaths.pop(i)
                 else:
@@ -53,10 +56,11 @@ class KITTI(Dataset):
             for i in range(len(fpaths)-self.sequence_length):
                 img_samples = fpaths[i:i+self.sequence_length]
                 imu_samples = imus[i*IMU_FREQ:(i+self.sequence_length-1)*IMU_FREQ+1]
+                timestamps_samples = timestamps[i : i + self.sequence_length]
                 pose_samples = poses[i:i+self.sequence_length]
                 pose_rel_samples = poses_rel[i:i+self.sequence_length-1]
                 segment_rot = rotationError(pose_samples[0], pose_samples[-1])
-                sample = {'imgs':img_samples, 'imus':imu_samples, 'gts': pose_rel_samples, 'rot': segment_rot}
+                sample = {'imgs':img_samples, 'imus':imu_samples, 'gts': pose_rel_samples, 'rot': segment_rot, "timestamps": timestamps_samples,}
                 sequence_set.append(sample)
         self.samples = sequence_set
         
@@ -77,9 +81,10 @@ class KITTI(Dataset):
     def __getitem__(self, index):
         sample = self.samples[index]
         imgs = [np.asarray(Image.open(img)) for img in sample['imgs']]
+        timestamps = np.copy(sample["timestamps"]).astype(np.float32)
         
         if self.transform is not None:
-            imgs, imus, gts = self.transform(imgs, np.copy(sample['imus']), np.copy(sample['gts']))
+            imgs, imus, gts, timestamps = self.transform(imgs, np.copy(sample['imus']), np.copy(sample['gts']), timestamps)
         else:
             imus = np.copy(sample['imus'])
             gts = np.copy(sample['gts']).astype(np.float32)
@@ -87,7 +92,7 @@ class KITTI(Dataset):
         rot = sample['rot'].astype(np.float32)
         weight = self.weights[index]
 
-        return imgs, imus, gts, rot, weight
+        return imgs, imus, gts, rot, weight, timestamps
 
     def __len__(self):
         return len(self.samples)

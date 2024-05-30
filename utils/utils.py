@@ -246,6 +246,16 @@ def read_pose_from_text(path):
         
     return poses_abs, poses_rel
 
+def read_time_from_text(path):
+    timestamps = []
+    with open(path) as f:
+        for line in f.readlines():
+            t = float(line)
+            timestamps.append(t)
+    # print(timestamps)
+    assert all(x < y for x, y in zip(timestamps, timestamps[1:]))
+    return timestamps
+
 def saveSequence(poses, file_name):
     with open(file_name, 'w') as f:
         for pose in poses:

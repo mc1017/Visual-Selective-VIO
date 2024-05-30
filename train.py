@@ -48,7 +48,7 @@ parser.add_argument('--temp_init', type=float, default=5, help='initial temperat
 parser.add_argument('--Lambda', type=float, default=3e-5, help='penalty factor for the visual encoder usage')
 
 parser.add_argument('--experiment_name', type=str, default='experiment', help='experiment name')
-parser.add_argument( "--wandb", default=True, action="store_true", help="whether to use wandb logging")
+parser.add_argument( "--wandb", default=False, action="store_true", help="whether to use wandb logging")
 parser.add_argument('--optimizer', type=str, default='Adam', help='type of optimizer [Adam, SGD]')
 parser.add_argument("--data_dropout", type=float, default=0.0, help="irregularity in the dataset by dropping out randomly")
 parser.add_argument("--eval_data_dropout", type=float, default=0.0, help="irregularity in the eval dataset")
@@ -60,6 +60,7 @@ parser.add_argument('--color', default=False, action='store_true', help='whether
 
 parser.add_argument('--print_frequency', type=int, default=10, help='print frequency for loss values')
 parser.add_argument('--weighted', default=False, action='store_true', help='whether to use weighted sum')
+parser.add_argument('--with_time', default=False, action='store_true', help='whether to use time as an input')
 
 args = parser.parse_args()
 
@@ -92,16 +93,17 @@ def train(model, optimizer, train_loader, selection, temp, logger, ep, p=0.5, we
     penalties = []
     data_len = len(train_loader)
 
-    for i, (imgs, imus, gts, rot, weight) in enumerate(train_loader):
+    for i, (imgs, imus, gts, rot, weight, timestamps) in enumerate(train_loader):
 
         imgs = imgs.cuda().float()
         imus = imus.cuda().float()
         gts = gts.cuda().float() 
         weight = weight.cuda().float()
+        timestamps = timestamps.cuda().float()
 
         optimizer.zero_grad()
                 
-        poses, decisions, probs, _ = model(imgs, imus, is_first=True, hc=None, temp=temp, selection=selection, p=p)
+        poses, decisions, probs, _ = model(imgs, imus,timestamps, is_first=True, hc=None, temp=temp, selection=selection, p=p)
         
         if not weighted:
             angle_loss = torch.nn.functional.mse_loss(poses[:,:,:3], gts[:, :, :3])

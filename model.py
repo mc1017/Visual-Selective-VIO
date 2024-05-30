@@ -150,15 +150,16 @@ class Pose_RNN(nn.Module):
 
         # The main RNN network
         f_len = opt.v_f_len + opt.i_f_len
+        self.with_time = opt.with_time
         self.rnn = nn.LSTM(
-            input_size=f_len,
+            input_size=f_len+self.with_time,
             hidden_size=opt.rnn_hidden_size,
             num_layers=2,
             dropout=opt.rnn_dropout_between,
             batch_first=True)
 
         self.fuse = Fusion_module(opt)
-
+        
         # The output networks
         self.rnn_drop_out = nn.Dropout(opt.rnn_dropout_out)
         self.regressor = nn.Sequential(
@@ -166,13 +167,14 @@ class Pose_RNN(nn.Module):
             nn.LeakyReLU(0.1, inplace=True),
             nn.Linear(128, 6))
 
-    def forward(self, fv, fv_alter, fi, dec, prev=None):
+    def forward(self, fv, fv_alter, fi, ts_diff, dec, prev=None):
         if prev is not None:
             prev = (prev[0].transpose(1, 0).contiguous(), prev[1].transpose(1, 0).contiguous())
         
         # Select between fv and fv_alter
         v_in = fv * dec[:, :, :1] + fv_alter * dec[:, :, -1:] if fv_alter is not None else fv
         fused = self.fuse(v_in, fi)
+        fused = torch.cat([ts_diff.unsqueeze(-1), fused], dim=2)
         
         out, hc = self.rnn(fused) if prev is None else self.rnn(fused, prev)
         out = self.rnn_drop_out(out)
@@ -194,9 +196,10 @@ class DeepVIO(nn.Module):
         
         initialization(self)
 
-    def forward(self, img, imu, is_first=True, hc=None, temp=5, selection='gumbel-softmax', p=0.5):
+    def forward(self, img, imu, timestamps, is_first=True, hc=None, temp=5, selection='gumbel-softmax', p=0.5):
 
         fv, fi = self.Feature_net(img, imu)
+        ts_diff = torch.diff(timestamps, dim=1) # find difference compared to previous timestamp
         batch_size = fv.shape[0]
         seq_len = fv.shape[1]
 
@@ -205,9 +208,10 @@ class DeepVIO(nn.Module):
         fv_alter = torch.zeros_like(fv) # zero padding in the paper, can be replaced by other 
         
         for i in range(seq_len):
+            
             if i == 0 and is_first:
                 # The first relative pose is estimated by both images and imu by default
-                pose, hc = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], None, hc)
+                pose, hc = self.Pose_net(fv[:, i:i+1, :], None, fi[:, i:i+1, :], ts_diff[:, i:i+1], None, hc)
             else:
                 if selection == 'gumbel-softmax':
                     # Otherwise, sample the decision from the policy network
@@ -215,7 +219,7 @@ class DeepVIO(nn.Module):
                     logit, decision = self.Policy_net(p_in.detach(), temp)
                     decision = decision.unsqueeze(1)
                     logit = logit.unsqueeze(1)
-                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
+                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], ts_diff[:, i:i+1], decision, hc)
                     decisions.append(decision)
                     logits.append(logit)
                 elif selection == 'random':
@@ -223,7 +227,7 @@ class DeepVIO(nn.Module):
                     decision[:,:,1] = 1-decision[:,:,0]
                     decision = decision.to(fv.device)
                     logit = 0.5*torch.ones((fv.shape[0], 1, 2)).to(fv.device)
-                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :], decision, hc)
+                    pose, hc = self.Pose_net(fv[:, i:i+1, :], fv_alter[:, i:i+1, :], fi[:, i:i+1, :],  ts_diff[:, i:i+1], decision, hc)
                     decisions.append(decision)
                     logits.append(logit)
             poses.append(pose)
